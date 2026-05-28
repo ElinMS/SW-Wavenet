@@ -1,0 +1,11 @@
+# Generated output data
+output/
+*.pt
+
+# Dataset (keep out of repo)
+dev_data*/
+*.wav
+
+# Python
+__pycache__/
+*.pyc

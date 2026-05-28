@@ -357,6 +357,117 @@ class SWWaveNetEncoder(nn.Module):
 
 
 # ---------------------------------------------------------------------------
+# Full SW-WaveNet Classifier (end-to-end)
+# ---------------------------------------------------------------------------
+
+class SWWaveNetClassifier(nn.Module):
+    """
+    Complete SW-WaveNet model for anomalous sound classification.
+
+    Combines all components into a single end-to-end trainable model:
+        1. SWWaveNetExactFrontend  (external, provides spectrogram — not trainable)
+        2. WavegramNet             (learns wavegram from raw waveform)
+        3. SWWaveNetEncoder        (dual-branch WaveNet encoder)
+        4. Classification head     (concatenation → FC → softmax)
+
+    The model is trained to classify Machine IDs using only normal sounds.
+    At test time, anomalous sounds produce low confidence → high anomaly score.
+
+    Paper: "we concatenate the representation vectors of the two branches and
+    feed the combination into a fully connected layer with a softmax to get the
+    category probabilities. The negative log probability is used as the anomaly
+    score for each sound."
+
+    Args:
+        wavegram_net:       WavegramNet instance (learns wavegram from waveform)
+        num_classes:        Number of Machine IDs to classify
+        spec_channels:      Frequency bins in spectrogram (n_mels)
+        wavegram_channels:  Channels in wavegram (C × F)
+        layers:             Dilated layers per block
+        blocks:             Number of dilation blocks
+        dilation_channels:  Channels inside gated activation
+        residual_channels:  Channels on residual path
+        skip_channels:      Channels for skip connections
+        end_channels:       Intermediate channels in end processing
+        repr_dim:           Size of each branch's representation vector
+        kernel_size:        Kernel size for dilated convolutions
+    """
+
+    def __init__(self,
+                 wavegram_net,
+                 num_classes,
+                 spec_channels=128,
+                 wavegram_channels=512,
+                 layers=6,
+                 blocks=2,
+                 dilation_channels=32,
+                 residual_channels=64,
+                 skip_channels=128,
+                 end_channels=128,
+                 repr_dim=128,
+                 kernel_size=2):
+        super(SWWaveNetClassifier, self).__init__()
+
+        self.repr_dim = repr_dim
+
+        # Branch 2 feature extractor: raw waveform → wavegram
+        self.wavegram_net = wavegram_net
+
+        # Dual-branch WaveNet encoder
+        self.encoder = SWWaveNetEncoder(
+            spec_channels=spec_channels,
+            wavegram_channels=wavegram_channels,
+            layers=layers,
+            blocks=blocks,
+            dilation_channels=dilation_channels,
+            residual_channels=residual_channels,
+            skip_channels=skip_channels,
+            end_channels=end_channels,
+            repr_dim=repr_dim,
+            kernel_size=kernel_size,
+        )
+
+        # Classification head: concatenated repr (2 × repr_dim) → classes
+        self.classifier = nn.Linear(repr_dim * 2, num_classes)
+
+    def forward(self, spectrogram, waveform):
+        """
+        Args:
+            spectrogram: [Batch, 1, Time, Freq=128]  — from frontend (no grad)
+            waveform:    [Batch, 1, Samples]          — raw audio
+
+        Returns:
+            logits: [Batch, num_classes]  — raw scores (use CrossEntropyLoss)
+        """
+        # Branch 2: waveform → learned wavegram
+        wavegram = self.wavegram_net(waveform)      # [B, 4, T', 128]
+
+        # Dual-branch encoding → representation vectors
+        spec_repr, wave_repr = self.encoder(spectrogram, wavegram)
+        # spec_repr: [B, repr_dim],  wave_repr: [B, repr_dim]
+
+        # Concatenate both branches
+        combined = torch.cat([spec_repr, wave_repr], dim=-1)  # [B, 2*repr_dim]
+
+        # Classification
+        logits = self.classifier(combined)           # [B, num_classes]
+        return logits
+
+    def anomaly_score(self, spectrogram, waveform):
+        """
+        Compute anomaly score = negative log probability of predicted class.
+
+        Returns:
+            scores: [Batch]  — higher score = more anomalous
+        """
+        logits = self.forward(spectrogram, waveform)
+        probs = F.softmax(logits, dim=-1)
+        # Use the max probability (most likely class) for scoring
+        max_probs, _ = probs.max(dim=-1)
+        return -torch.log(max_probs + 1e-8)
+
+
+# ---------------------------------------------------------------------------
 # Standalone test
 # ---------------------------------------------------------------------------
 

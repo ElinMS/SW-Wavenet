@@ -1,11 +1,26 @@
 import os
+import sys
+import glob
+import time
 import torch
 import torch.nn as nn
 import librosa
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")  # Non-interactive backend for batch saving
 import matplotlib.pyplot as plt
 import soundfile as sf
 from sklearn.datasets import fetch_california_housing
+
+
+# ── Configuration ─────────────────────────────────────────────────────────
+
+DATASET_DIR   = r"c:\wavenet_data\dev_data_fan\fan\train"
+OUTPUT_DIR    = r"c:\wavenet_project\output"
+SPEC_DIR      = os.path.join(OUTPUT_DIR, "spectrograms")
+WAVE_DIR      = os.path.join(OUTPUT_DIR, "wavegrams")
+NUM_FILES     = 250
+
 
 class SWWaveNetExactFrontend:
     def __init__(self, sample_rate=16000, n_mels=128, n_fft=1024, hop_length=512):
@@ -57,108 +72,173 @@ def create_real_acoustic_sample(filename="input_sample.wav"):
     sf.write(filename, normalized_signal, 16000)
     print(f"Created real testing track: {filename}")
 
-def run_pipeline():
-    audio_file = "Recording.wav"
-    
-    # Generate the authentic audio file locally only if it doesn't already exist
-    if not os.path.exists(audio_file):
-        create_real_acoustic_sample(audio_file)
 
-    from wavegram_net import WavegramNet
-    from wavenet_model import SWWaveNetEncoder
-
-    # ── Stage 1: Frontend Feature Extraction ──────────────────────────
-    extractor = SWWaveNetExactFrontend()
-    spectrogram, waveform = extractor.extract_branches(audio_file)
-    
-    # Pass waveform through WavegramNet to extract the learned Wavegram
-    wavegram_net = WavegramNet()
-    with torch.no_grad():
-        # wavegram shape: [Batch, 4, Time, 128]
-        wavegram = wavegram_net(waveform)
-    
-    print("\n" + "="*70)
-    print("  STAGE 1: FRONTEND FEATURE EXTRACTION")
-    print("="*70)
-    print(f"  Spectrogram Shape : {list(spectrogram.shape)}")
-    print(f"    -> [Batch=1, Ch=1, Time={spectrogram.shape[-2]}, Freq={spectrogram.shape[-1]}]")
-    print(f"  Wavegram Shape    : {list(wavegram.shape)}")
-    print(f"    -> [Batch=1, Ch=4, Time={wavegram.shape[-2]}, Freq={wavegram.shape[-1]}]")
-
-    # ── Stage 2: WaveNet Backbone Encoding ────────────────────────────
-    # Both 2D features are reshaped to 1D sequences and passed through
-    # separate WaveNet backbones to produce representation vectors.
-    encoder = SWWaveNetEncoder(
-        spec_channels=128,       # n_mels frequency bins
-        wavegram_channels=512,   # 4 channels × 128 freq bins
-        layers=6,                # dilated layers per block
-        blocks=2,                # number of dilation blocks
-        dilation_channels=32,
-        residual_channels=64,
-        skip_channels=128,
-        end_channels=128,
-        repr_dim=128,            # output representation vector size
-        kernel_size=2,
-    )
-
-    with torch.no_grad():
-        spec_repr, wave_repr = encoder(spectrogram, wavegram)
-
-    total_params = sum(p.numel() for p in encoder.parameters())
-
-    print("\n" + "="*70)
-    print("  STAGE 2: WAVENET BACKBONE ENCODING")
-    print("="*70)
-    print(f"  Encoder parameters         : {total_params:,}")
-    print(f"  Spec WaveNet receptive field: {encoder.wavenet_spec.receptive_field} frames")
-    print(f"  Wave WaveNet receptive field: {encoder.wavenet_wave.receptive_field} frames")
-    print("-"*70)
-    print(f"  Spectrogram repr vector : {list(spec_repr.shape)}")
-    print(f"    -> [Batch=1, repr_dim={spec_repr.shape[-1]}]")
-    print(f"  Wavegram repr vector    : {list(wave_repr.shape)}")
-    print(f"    -> [Batch=1, repr_dim={wave_repr.shape[-1]}]")
-
-    # ── Summary ───────────────────────────────────────────────────────
-    print("\n" + "="*70)
-    print("  [OK] FULL SW-WAVENET PIPELINE COMPLETE")
-    print("="*70)
-    print("  Raw Waveform")
-    print("    |-- Feature Extraction --> Spectrogram --> WaveNet --> Repr Vector")
-    print("    +-- WavegramNet ---------> Wavegram ----> WaveNet --> Repr Vector")
-    print("="*70 + "\n")
-
-    # ── Visualization ─────────────────────────────────────────────────
-    fig, axes = plt.subplots(2, 2, figsize=(14, 7),
-                              gridspec_kw={'width_ratios': [4, 1]})
-
-    # Row 1: Spectrogram branch
-    axes[0, 0].imshow(spectrogram.squeeze().numpy().T,
-                       aspect='auto', origin='lower', cmap='viridis')
-    axes[0, 0].set_title("Branch 1: Log-Mel Spectrogram")
-    axes[0, 0].set_ylabel("Mel Bins")
-
-    axes[0, 1].barh(range(len(spec_repr.squeeze())), spec_repr.squeeze().numpy(),
-                     color='#2ecc71', height=0.8)
-    axes[0, 1].set_title("Spec Repr Vec")
-    axes[0, 1].set_yticks([])
-    axes[0, 1].set_xlabel("Value")
-
-    # Row 2: Wavegram branch
-    axes[1, 0].imshow(wavegram[0, 0].numpy().T,
-                       aspect='auto', origin='lower', cmap='plasma')
-    axes[1, 0].set_title("Branch 2: Learned Wavegram (Ch 0)")
-    axes[1, 0].set_xlabel("Time Frames")
-    axes[1, 0].set_ylabel("Freq/Filter Bins")
-
-    axes[1, 1].barh(range(len(wave_repr.squeeze())), wave_repr.squeeze().numpy(),
-                     color='#e74c3c', height=0.8)
-    axes[1, 1].set_title("Wave Repr Vec")
-    axes[1, 1].set_yticks([])
-    axes[1, 1].set_xlabel("Value")
-
+def save_spectrogram_png(spec_tensor, save_path, title):
+    """Save a log-mel spectrogram visualisation from [1, 1, Time, Freq]."""
+    spec_np = spec_tensor.squeeze().numpy()          # [Time, Freq]
+    fig, ax = plt.subplots(figsize=(10, 3))
+    img = ax.imshow(spec_np.T, aspect="auto", origin="lower", cmap="viridis")
+    ax.set_title(title, fontsize=9)
+    ax.set_xlabel("Time Frames")
+    ax.set_ylabel("Mel Bins")
+    fig.colorbar(img, ax=ax, format="%+.1f dB")
     plt.tight_layout()
-    plt.savefig("sw_wavenet_full_pipeline_output.png", dpi=150)
-    print("Visualization saved as 'sw_wavenet_full_pipeline_output.png'!")
+    plt.savefig(save_path, dpi=100, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_wavegram_png(wave_tensor, save_path, title):
+    """Save a wavegram visualisation from [1, 4, Time, Freq] (all 4 channels)."""
+    wave_np = wave_tensor.squeeze(0).numpy()         # [4, Time, Freq]
+    n_ch = wave_np.shape[0]
+    fig, axes = plt.subplots(n_ch, 1, figsize=(10, 2 * n_ch), sharex=True)
+    if n_ch == 1:
+        axes = [axes]
+    for ch in range(n_ch):
+        img = axes[ch].imshow(wave_np[ch].T, aspect="auto", origin="lower", cmap="plasma")
+        axes[ch].set_ylabel(f"Ch {ch}")
+        fig.colorbar(img, ax=axes[ch], format="%.2f")
+    axes[0].set_title(title, fontsize=9)
+    axes[-1].set_xlabel("Time Frames")
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=100, bbox_inches="tight")
+    plt.close(fig)
+
+
+def run_pipeline():
+    """
+    Batch-process the first NUM_FILES audio files from the fan training set.
+
+    For each audio file:
+        1. Extract the log-mel spectrogram  (SWWaveNetExactFrontend)
+        2. Generate the learned wavegram    (WavegramNet)
+        3. Save both as .pt tensors and .png visualisations into separate folders.
+
+    Output layout:
+        output/spectrograms/<basename>.pt   — spectrogram tensor [1, 1, T, 128]
+        output/spectrograms/<basename>.png  — spectrogram image
+        output/wavegrams/<basename>.pt      — wavegram tensor    [1, 4, T', 128]
+        output/wavegrams/<basename>.png     — wavegram image (4 channels)
+    """
+    from wavegram_net import WavegramNet
+
+    print("=" * 70)
+    print("  SW-WaveNet — Batch Feature Extraction")
+    print("=" * 70)
+
+    # ── 1. Setup ──────────────────────────────────────────────────────
+    os.makedirs(SPEC_DIR, exist_ok=True)
+    os.makedirs(WAVE_DIR, exist_ok=True)
+
+    all_wavs = sorted(glob.glob(os.path.join(DATASET_DIR, "*.wav")))
+    if not all_wavs:
+        print(f"[ERROR] No .wav files found in {DATASET_DIR}")
+        sys.exit(1)
+
+    selected = all_wavs[:NUM_FILES]
+    print(f"  Dataset dir  : {DATASET_DIR}")
+    print(f"  Total files  : {len(all_wavs)}")
+    print(f"  Processing   : first {len(selected)}")
+    print(f"  Spec output  : {SPEC_DIR}")
+    print(f"  Wave output  : {WAVE_DIR}")
+    print("-" * 70)
+
+    # ── 2. Initialise models ──────────────────────────────────────────
+    frontend = SWWaveNetExactFrontend()
+
+    wavegram_net = WavegramNet()
+
+    # Load trained weights if checkpoint exists
+    ckpt_path = os.path.join(r"c:\wavenet_project\checkpoints", "best_model.pt")
+    if os.path.exists(ckpt_path):
+        print(f"  Loading trained weights from: {ckpt_path}")
+        checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        # Extract only WavegramNet weights from the full model state dict
+        full_state = checkpoint['model_state_dict']
+        wavegram_state = {
+            k.replace("wavegram_net.", ""): v
+            for k, v in full_state.items()
+            if k.startswith("wavegram_net.")
+        }
+        wavegram_net.load_state_dict(wavegram_state)
+        print("  ✓ Loaded trained WavegramNet weights — wavegrams will be meaningful")
+    else:
+        print("  ⚠ No trained checkpoint found — wavegrams will be random noise")
+        print(f"    Run 'python train.py' first, then re-run this script")
+
+    wavegram_net.eval()
+    print(f"  WavegramNet params : {sum(p.numel() for p in wavegram_net.parameters()):,}")
+    print("-" * 70)
+
+    # ── 3. Process each file ──────────────────────────────────────────
+    t0 = time.time()
+    errors = []
+
+    for idx, audio_path in enumerate(selected):
+        basename = os.path.splitext(os.path.basename(audio_path))[0]
+
+        try:
+            # --- Branch 1: Log-mel spectrogram (deterministic, from librosa) ---
+            spectrogram, waveform = frontend.extract_branches(audio_path)
+            # spectrogram : [1, 1, Time, 128]
+            # waveform    : [1, 1, Samples]
+
+            # --- Branch 2: Learned wavegram (from WavegramNet) ---
+            with torch.no_grad():
+                wavegram = wavegram_net(waveform)
+            # wavegram : [1, 4, Time', 128]
+
+            # --- Save tensors ---
+            torch.save(spectrogram, os.path.join(SPEC_DIR, f"{basename}.pt"))
+            torch.save(wavegram,    os.path.join(WAVE_DIR, f"{basename}.pt"))
+
+            # --- Save visualisations ---
+            save_spectrogram_png(
+                spectrogram,
+                os.path.join(SPEC_DIR, f"{basename}.png"),
+                f"Log-Mel Spectrogram — {basename}",
+            )
+            save_wavegram_png(
+                wavegram,
+                os.path.join(WAVE_DIR, f"{basename}.png"),
+                f"Learned Wavegram — {basename}",
+            )
+
+            # --- Progress every 10 files ---
+            if (idx + 1) % 10 == 0 or idx == 0:
+                elapsed = time.time() - t0
+                rate = (idx + 1) / elapsed
+                eta = (len(selected) - idx - 1) / rate if rate > 0 else 0
+                print(
+                    f"  [{idx+1:>3}/{len(selected)}]  {basename}"
+                    f"  | spec {list(spectrogram.shape)}"
+                    f"  | wave {list(wavegram.shape)}"
+                    f"  | ETA {eta:.0f}s"
+                )
+
+        except Exception as e:
+            errors.append((basename, str(e)))
+            print(f"  [{idx+1:>3}/{len(selected)}]  {basename}  | ERROR: {e}")
+
+    # ── 4. Summary ────────────────────────────────────────────────────
+    elapsed = time.time() - t0
+    ok = len(selected) - len(errors)
+
+    print("\n" + "=" * 70)
+    print("  BATCH FEATURE EXTRACTION COMPLETE")
+    print("=" * 70)
+    print(f"  Succeeded : {ok}/{len(selected)} files")
+    print(f"  Errors    : {len(errors)}")
+    print(f"  Time      : {elapsed:.1f}s  ({elapsed/len(selected):.2f}s per file)")
+    print(f"  Output    : {OUTPUT_DIR}")
+    print(f"    ├── spectrograms/  ({ok} .pt + {ok} .png)")
+    print(f"    └── wavegrams/     ({ok} .pt + {ok} .png)")
+    if errors:
+        print("\n  Failed files:")
+        for name, err in errors:
+            print(f"    - {name}: {err}")
+    print("=" * 70)
+
 
 if __name__ == "__main__":
     run_pipeline()
