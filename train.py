@@ -31,7 +31,7 @@ from wavenet_model import SWWaveNetClassifier
 # Configuration
 # ══════════════════════════════════════════════════════════════════════════
 
-DATASET_DIR   = r"c:\wavenet_data\dev_data_fan\fan\train"
+DATASET_DIR   = "/home/teaching/Elin/fan/train"
 NUM_FILES     = None         # Use all files (None = all)
 SAMPLE_RATE   = 16000
 N_MELS        = 128
@@ -46,7 +46,7 @@ VAL_SPLIT     = 0.2          # 20% for validation
 DEVICE        = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Output
-CHECKPOINT_DIR = r"c:\wavenet_project\checkpoints"
+CHECKPOINT_DIR = "/home/teaching/Elin/SW-Wavenet/checkpoints"
 
 
 # ══════════════════════════════════════════════════════════════════════════

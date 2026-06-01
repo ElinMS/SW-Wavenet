@@ -15,8 +15,8 @@ from sklearn.datasets import fetch_california_housing
 
 # ── Configuration ─────────────────────────────────────────────────────────
 
-DATASET_DIR   = r"c:\wavenet_data\dev_data_fan\fan\train"
-OUTPUT_DIR    = r"c:\wavenet_project\output"
+DATASET_DIR   = "/home/teaching/Elin/fan/train"
+OUTPUT_DIR    = "/home/teaching/Elin/SW-Wavenet/output"
 SPEC_DIR      = os.path.join(OUTPUT_DIR, "spectrograms")
 WAVE_DIR      = os.path.join(OUTPUT_DIR, "wavegrams")
 NUM_FILES     = 250
@@ -149,7 +149,7 @@ def run_pipeline():
     wavegram_net = WavegramNet()
 
     # Load trained weights if checkpoint exists
-    ckpt_path = os.path.join(r"c:\wavenet_project\checkpoints", "best_model.pt")
+    ckpt_path = os.path.join("/home/teaching/Elin/SW-Wavenet/checkpoints", "best_model.pt")
     if os.path.exists(ckpt_path):
         print(f"  Loading trained weights from: {ckpt_path}")
         checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
