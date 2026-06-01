@@ -39,9 +39,9 @@ N_FFT         = 1024
 HOP_LENGTH    = 512
 
 # Training hyperparameters
-BATCH_SIZE    = 4
+BATCH_SIZE    = 32
 LEARNING_RATE = 1e-4
-NUM_EPOCHS    = 30
+NUM_EPOCHS    = 50
 VAL_SPLIT     = 0.2          # 20% for validation
 DEVICE        = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -176,8 +176,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch):
         waveform = waveform.to(device)
         labels = labels.to(device)
 
-        # Forward pass
-        logits = model(spectrogram, waveform)
+        # Forward pass (labels needed for ArcFace angular margin)
+        logits = model(spectrogram, waveform, labels=labels)
         loss = criterion(logits, labels)
 
         # Backward pass
@@ -272,14 +272,15 @@ def main():
         num_classes=dataset.num_classes,
         spec_channels=N_MELS,
         wavegram_channels=512,
-        layers=6,
-        blocks=2,
-        dilation_channels=32,
-        residual_channels=64,
-        skip_channels=128,
-        end_channels=128,
+        layers=4,
+        blocks=3,
+        dilation_channels=512,
+        residual_channels=512,
+        skip_channels=512,
         repr_dim=128,
         kernel_size=2,
+        arcface_scale=30.0,
+        arcface_margin=0.7,
     )
     model = model.to(DEVICE)
 
@@ -294,9 +295,9 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.CrossEntropyLoss()
 
-    # Learning rate scheduler: reduce LR when validation loss plateaus
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5
+    # Learning rate scheduler: cosine annealing (paper specification)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=NUM_EPOCHS
     )
 
     # ── 4. Training Loop ──────────────────────────────────────────────
@@ -318,7 +319,7 @@ def main():
         val_loss, val_acc = validate(model, val_loader, criterion, DEVICE)
 
         # Step scheduler
-        scheduler.step(val_loss)
+        scheduler.step()
 
         elapsed = time.time() - t0
         lr = optimizer.param_groups[0]['lr']

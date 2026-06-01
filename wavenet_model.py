@@ -10,33 +10,37 @@ wavegram are reshaped from 2D (Time × Freq) into 1D sequences where frequency
 bins become input channels, then processed through stacked dilated convolution
 blocks to produce fixed-size representation vectors.
 
-Architecture (per branch):
+Architecture (per branch) — Paper-matched configuration:
     ┌─────────────────────────────────────────────────────────────────┐
     │  1. Start Conv (1×1)                                           │
-    │     Project input channels → residual_channels                 │
+    │     Project input channels → residual_channels (512)           │
     │                                                                │
-    │  2. Stacked Dilated Blocks (layers × blocks):                  │
+    │  2. Stacked Dilated Blocks (3 stacks × 4 layers = 12 total):  │
     │     ┌────────────────────────────────────────────────────────┐  │
     │     │  Dilated Conv (filter) → tanh  ─┐                     │  │
     │     │                                 ├→ element-wise mult  │  │
     │     │  Dilated Conv (gate)  → sigmoid ┘     (gated act.)    │  │
-    │     │       │                                               │  │
+    │     │       │ → BatchNorm                                   │  │
     │     │       ├─→ 1×1 Conv → + input  (residual connection)   │  │
     │     │       └─→ 1×1 Conv → accumulate (skip connection)     │  │
     │     └────────────────────────────────────────────────────────┘  │
-    │     Dilations: 1, 2, 4, 8, 16, 32, ... (per block)            │
+    │     Dilations: 1, 2, 4, 8 (per stack)                          │
     │                                                                │
-    │  3. End Processing:                                            │
-    │     Sum skip connections → ReLU → 1×1 Conv → ReLU → 1×1 Conv  │
+    │  3. Representation Compression Module:                         │
+    │     Sum skips → BN → ReLU → Depthwise Conv1D → BN → 1×1 Conv  │
     │                                                                │
-    │  4. Global Average Pooling → Representation Vector             │
+    │  4. Global Average Pooling → Representation Vector (128-d)     │
     └─────────────────────────────────────────────────────────────────┘
 
 Dual-Branch Encoder:
     Raw Waveform ─┬─ Feature Extraction ──→ Spectrogram ──→ WaveNet ──→ Repr Vec
                   └─ WavegramNet ─────────→ Wavegram ─────→ WaveNet ──→ Repr Vec
+
+Classification:
+    concat(spec_repr, wave_repr) → ArcFace Head → Category Probabilities
 """
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -48,14 +52,15 @@ import torch.nn.functional as F
 
 class WaveNetLayer(nn.Module):
     """
-    A single WaveNet dilated convolution layer with gated activation unit.
+    A single WaveNet dilated convolution layer with gated activation unit
+    and batch normalization.
 
     Implements:
         filter  = tanh( DilatedConv(x) )
         gate    = σ( DilatedConv(x) )
-        z       = filter ⊙ gate              (gated activation)
-        skip    = Conv1×1(z)                  (skip connection output)
-        residual= Conv1×1(z) + x              (residual connection)
+        z       = BN( filter ⊙ gate )          (gated activation + BN)
+        skip    = Conv1×1(z)                    (skip connection output)
+        residual= Conv1×1(z) + x                (residual connection)
 
     Args:
         residual_channels:  Width of the residual path
@@ -87,6 +92,9 @@ class WaveNetLayer(nn.Module):
             padding=pad, bias=bias
         )
 
+        # Batch normalization after gated activation (paper requirement)
+        self.bn = nn.BatchNorm1d(dilation_channels)
+
         # 1×1 convolutions for residual and skip projections
         self.residual_conv = nn.Conv1d(dilation_channels, residual_channels, 1, bias=bias)
         self.skip_conv = nn.Conv1d(dilation_channels, skip_channels, 1, bias=bias)
@@ -109,8 +117,8 @@ class WaveNetLayer(nn.Module):
             f = f[..., :x.size(-1)]
             g = g[..., :x.size(-1)]
 
-        # Gated activation unit
-        z = torch.tanh(f) * torch.sigmoid(g)
+        # Gated activation unit + batch normalization
+        z = self.bn(torch.tanh(f) * torch.sigmoid(g))
 
         # Skip connection output
         skip = self.skip_conv(z)
@@ -127,27 +135,32 @@ class WaveNetLayer(nn.Module):
 
 class WaveNetBackbone(nn.Module):
     """
-    WaveNet encoder backbone that produces a representation vector
-    from a 1D multi-channel sequence.
+    WaveNet encoder backbone with representation compression module.
 
     The backbone stacks multiple dilated convolution layers arranged in
     blocks.  Within each block the dilation doubles per layer
-    (1, 2, 4, 8, …), giving the network an exponentially large receptive
+    (1, 2, 4, 8), giving the network an exponentially large receptive
     field.  Skip connections from every layer are summed and passed through
-    two 1×1 convolutions before global average pooling collapses the time
-    axis into a fixed-size representation vector.
+    the representation compression module before global average pooling
+    collapses the time axis into a fixed-size representation vector.
+
+    Paper configuration:
+        - m = 3 residual stacks, each with 4 dilated residual blocks
+        - Dilations per stack: 1, 2, 4, 8
+        - Cout = 512, Cskip = 512
+        - Representation compression: BN → ReLU → Depthwise Conv → BN → 1×1 Conv
+        - Representation vector length: 128
 
     Input:  [Batch, in_channels, Time]
     Output: [Batch, repr_dim]
 
     Args:
         in_channels:        Number of input channels (freq bins or C×F)
-        layers:             Number of dilated layers per block
-        blocks:             Number of repeated blocks
-        dilation_channels:  Channels inside gated activation
-        residual_channels:  Channels on the residual path
-        skip_channels:      Channels for skip connections
-        end_channels:       Intermediate channels in end processing
+        layers:             Number of dilated layers per block (paper: 4)
+        blocks:             Number of repeated blocks (paper: 3)
+        dilation_channels:  Channels inside gated activation (paper: 512)
+        residual_channels:  Channels on the residual path (paper: 512)
+        skip_channels:      Channels for skip connections (paper: 512)
         repr_dim:           Dimensionality of the output representation vector
         kernel_size:        Kernel size for dilated convolutions
         bias:               Whether to use bias in conv layers
@@ -155,12 +168,11 @@ class WaveNetBackbone(nn.Module):
 
     def __init__(self,
                  in_channels,
-                 layers=6,
-                 blocks=2,
-                 dilation_channels=32,
-                 residual_channels=64,
-                 skip_channels=128,
-                 end_channels=128,
+                 layers=4,
+                 blocks=3,
+                 dilation_channels=512,
+                 residual_channels=512,
+                 skip_channels=512,
                  repr_dim=128,
                  kernel_size=2,
                  bias=True):
@@ -191,11 +203,16 @@ class WaveNetBackbone(nn.Module):
                     )
                 )
 
-        # --- End: process accumulated skip connections ---
-        self.end_conv1 = nn.Conv1d(skip_channels, end_channels, 1, bias=bias)
-        self.end_bn1 = nn.BatchNorm1d(end_channels)
-        self.end_conv2 = nn.Conv1d(end_channels, repr_dim, 1, bias=bias)
-        self.end_bn2 = nn.BatchNorm1d(repr_dim)
+        # --- Representation Compression Module ---
+        # Paper: "two batch normalization layers, a ReLU activation function,
+        #         a 1-D depth-wise convolution and a 1×1 convolution"
+        self.compress_bn1 = nn.BatchNorm1d(skip_channels)
+        self.compress_depthwise = nn.Conv1d(
+            skip_channels, skip_channels, kernel_size=3, padding=1,
+            groups=skip_channels, bias=bias
+        )
+        self.compress_bn2 = nn.BatchNorm1d(skip_channels)
+        self.compress_pointwise = nn.Conv1d(skip_channels, repr_dim, 1, bias=bias)
 
         # Receptive field (for information / debugging)
         self.receptive_field = self._calc_receptive_field()
@@ -229,15 +246,89 @@ class WaveNetBackbone(nn.Module):
             x, skip = layer(x)
             skip_sum = skip_sum + skip
 
-        # End processing on accumulated skips
-        out = F.relu(skip_sum)
-        out = F.relu(self.end_bn1(self.end_conv1(out)))
-        out = self.end_bn2(self.end_conv2(out))
+        # Representation Compression Module
+        out = F.relu(self.compress_bn1(skip_sum))
+        out = self.compress_depthwise(out)
+        out = self.compress_bn2(out)
+        out = self.compress_pointwise(out)
 
         # Global Average Pooling → fixed-size representation vector
         repr_vec = out.mean(dim=-1)  # [Batch, repr_dim]
 
         return repr_vec
+
+
+# ---------------------------------------------------------------------------
+# ArcFace Classification Head
+# ---------------------------------------------------------------------------
+
+class ArcFaceHead(nn.Module):
+    """
+    ArcFace (Additive Angular Margin) classification head.
+
+    Paper specification: margin = 0.7, scale = 30
+
+    During training, adds an angular margin penalty to the target class
+    cosine similarity, forcing the model to learn more discriminative
+    representation vectors.  During evaluation, returns plain scaled
+    cosine similarities (no margin applied).
+
+    Args:
+        in_features:  Dimensionality of the input representation
+        num_classes:  Number of output categories
+        scale:        Scaling factor s (paper: 30)
+        margin:       Angular margin m in radians (paper: 0.7)
+    """
+
+    def __init__(self, in_features, num_classes, scale=30.0, margin=0.7):
+        super(ArcFaceHead, self).__init__()
+        self.scale = scale
+        self.margin = margin
+        self.weight = nn.Parameter(torch.FloatTensor(num_classes, in_features))
+        nn.init.xavier_uniform_(self.weight)
+
+        # Precompute margin terms for cos(theta + m) expansion
+        self.cos_m = math.cos(margin)
+        self.sin_m = math.sin(margin)
+        # Threshold to avoid numerical issues when theta + m > pi
+        self.th = math.cos(math.pi - margin)
+        self.mm = math.sin(math.pi - margin) * margin
+
+    def forward(self, features, labels=None):
+        """
+        Args:
+            features: [Batch, in_features]
+            labels:   [Batch] — required during training for margin
+
+        Returns:
+            logits: [Batch, num_classes] — scaled cosine similarities
+        """
+        # L2 normalize features and weights
+        features_norm = F.normalize(features, p=2, dim=1)
+        weights_norm = F.normalize(self.weight, p=2, dim=1)
+
+        # Cosine similarity: [B, num_classes]
+        cosine = F.linear(features_norm, weights_norm)
+
+        if labels is not None and self.training:
+            # Compute sin(theta) from cos(theta)
+            sine = torch.sqrt(1.0 - torch.clamp(cosine * cosine, 0, 1))
+
+            # cos(theta + m) = cos(theta)*cos(m) - sin(theta)*sin(m)
+            phi = cosine * self.cos_m - sine * self.sin_m
+
+            # Numerical safety: if cos(theta) < threshold, use linear fallback
+            phi = torch.where(cosine > self.th, phi, cosine - self.mm)
+
+            # Apply margin only to the target class
+            one_hot = F.one_hot(labels, num_classes=cosine.size(1)).float()
+            output = (one_hot * phi) + ((1.0 - one_hot) * cosine)
+        else:
+            output = cosine
+
+        # Scale by s
+        output = output * self.scale
+        return output
 
 
 # ---------------------------------------------------------------------------
@@ -267,25 +358,23 @@ class SWWaveNetEncoder(nn.Module):
     Args:
         spec_channels:      Input channels for spectrogram branch (n_mels)
         wavegram_channels:  Input channels for wavegram branch (C × F)
-        layers:             Dilated layers per block in each WaveNet
-        blocks:             Number of dilation blocks in each WaveNet
-        dilation_channels:  Channels inside gated activation
-        residual_channels:  Channels on residual path
-        skip_channels:      Channels for skip connections
-        end_channels:       Intermediate channels in end processing
-        repr_dim:           Size of the output representation vector
+        layers:             Dilated layers per block in each WaveNet (paper: 4)
+        blocks:             Number of dilation blocks in each WaveNet (paper: 3)
+        dilation_channels:  Channels inside gated activation (paper: 512)
+        residual_channels:  Channels on residual path (paper: 512)
+        skip_channels:      Channels for skip connections (paper: 512)
+        repr_dim:           Size of the output representation vector (paper: 128)
         kernel_size:        Kernel size for dilated convolutions
     """
 
     def __init__(self,
                  spec_channels=128,
                  wavegram_channels=512,
-                 layers=6,
-                 blocks=2,
-                 dilation_channels=32,
-                 residual_channels=64,
-                 skip_channels=128,
-                 end_channels=128,
+                 layers=4,
+                 blocks=3,
+                 dilation_channels=512,
+                 residual_channels=512,
+                 skip_channels=512,
                  repr_dim=128,
                  kernel_size=2):
         super(SWWaveNetEncoder, self).__init__()
@@ -300,7 +389,6 @@ class SWWaveNetEncoder(nn.Module):
             dilation_channels=dilation_channels,
             residual_channels=residual_channels,
             skip_channels=skip_channels,
-            end_channels=end_channels,
             repr_dim=repr_dim,
             kernel_size=kernel_size,
         )
@@ -313,7 +401,6 @@ class SWWaveNetEncoder(nn.Module):
             dilation_channels=dilation_channels,
             residual_channels=residual_channels,
             skip_channels=skip_channels,
-            end_channels=end_channels,
             repr_dim=repr_dim,
             kernel_size=kernel_size,
         )
@@ -368,7 +455,7 @@ class SWWaveNetClassifier(nn.Module):
         1. SWWaveNetExactFrontend  (external, provides spectrogram — not trainable)
         2. WavegramNet             (learns wavegram from raw waveform)
         3. SWWaveNetEncoder        (dual-branch WaveNet encoder)
-        4. Classification head     (concatenation → FC → softmax)
+        4. ArcFace head            (concatenation → cosine similarity + margin)
 
     The model is trained to classify Machine IDs using only normal sounds.
     At test time, anomalous sounds produce low confidence → high anomaly score.
@@ -378,19 +465,22 @@ class SWWaveNetClassifier(nn.Module):
     category probabilities. The negative log probability is used as the anomaly
     score for each sound."
 
+    Loss: ArcFace (margin=0.7, scale=30) with CrossEntropyLoss on the output.
+
     Args:
         wavegram_net:       WavegramNet instance (learns wavegram from waveform)
         num_classes:        Number of Machine IDs to classify
         spec_channels:      Frequency bins in spectrogram (n_mels)
         wavegram_channels:  Channels in wavegram (C × F)
-        layers:             Dilated layers per block
-        blocks:             Number of dilation blocks
-        dilation_channels:  Channels inside gated activation
-        residual_channels:  Channels on residual path
-        skip_channels:      Channels for skip connections
-        end_channels:       Intermediate channels in end processing
-        repr_dim:           Size of each branch's representation vector
+        layers:             Dilated layers per block (paper: 4)
+        blocks:             Number of dilation blocks (paper: 3)
+        dilation_channels:  Channels inside gated activation (paper: 512)
+        residual_channels:  Channels on residual path (paper: 512)
+        skip_channels:      Channels for skip connections (paper: 512)
+        repr_dim:           Size of each branch's representation vector (paper: 128)
         kernel_size:        Kernel size for dilated convolutions
+        arcface_scale:      ArcFace scaling factor (paper: 30)
+        arcface_margin:     ArcFace angular margin (paper: 0.7)
     """
 
     def __init__(self,
@@ -398,14 +488,15 @@ class SWWaveNetClassifier(nn.Module):
                  num_classes,
                  spec_channels=128,
                  wavegram_channels=512,
-                 layers=6,
-                 blocks=2,
-                 dilation_channels=32,
-                 residual_channels=64,
-                 skip_channels=128,
-                 end_channels=128,
+                 layers=4,
+                 blocks=3,
+                 dilation_channels=512,
+                 residual_channels=512,
+                 skip_channels=512,
                  repr_dim=128,
-                 kernel_size=2):
+                 kernel_size=2,
+                 arcface_scale=30.0,
+                 arcface_margin=0.7):
         super(SWWaveNetClassifier, self).__init__()
 
         self.repr_dim = repr_dim
@@ -422,22 +513,28 @@ class SWWaveNetClassifier(nn.Module):
             dilation_channels=dilation_channels,
             residual_channels=residual_channels,
             skip_channels=skip_channels,
-            end_channels=end_channels,
             repr_dim=repr_dim,
             kernel_size=kernel_size,
         )
 
-        # Classification head: concatenated repr (2 × repr_dim) → classes
-        self.classifier = nn.Linear(repr_dim * 2, num_classes)
+        # ArcFace classification head: concatenated repr (2 × repr_dim) → classes
+        self.classifier = ArcFaceHead(
+            in_features=repr_dim * 2,
+            num_classes=num_classes,
+            scale=arcface_scale,
+            margin=arcface_margin,
+        )
 
-    def forward(self, spectrogram, waveform):
+    def forward(self, spectrogram, waveform, labels=None):
         """
         Args:
             spectrogram: [Batch, 1, Time, Freq=128]  — from frontend (no grad)
             waveform:    [Batch, 1, Samples]          — raw audio
+            labels:      [Batch] int                  — required during training
+                         for ArcFace angular margin (ignored during eval)
 
         Returns:
-            logits: [Batch, num_classes]  — raw scores (use CrossEntropyLoss)
+            logits: [Batch, num_classes]  — scaled cosine similarities
         """
         # Branch 2: waveform → learned wavegram
         wavegram = self.wavegram_net(waveform)      # [B, 4, T', 128]
@@ -449,9 +546,22 @@ class SWWaveNetClassifier(nn.Module):
         # Concatenate both branches
         combined = torch.cat([spec_repr, wave_repr], dim=-1)  # [B, 2*repr_dim]
 
-        # Classification
-        logits = self.classifier(combined)           # [B, num_classes]
+        # ArcFace classification
+        logits = self.classifier(combined, labels)   # [B, num_classes]
         return logits
+
+    def get_representation(self, spectrogram, waveform):
+        """
+        Extract the concatenated representation vector without classification.
+
+        Useful for t-SNE visualization, anomaly scoring, etc.
+
+        Returns:
+            combined: [Batch, 2 * repr_dim]
+        """
+        wavegram = self.wavegram_net(waveform)
+        spec_repr, wave_repr = self.encoder(spectrogram, wavegram)
+        return torch.cat([spec_repr, wave_repr], dim=-1)
 
     def anomaly_score(self, spectrogram, waveform):
         """
@@ -460,7 +570,7 @@ class SWWaveNetClassifier(nn.Module):
         Returns:
             scores: [Batch]  — higher score = more anomalous
         """
-        logits = self.forward(spectrogram, waveform)
+        logits = self.forward(spectrogram, waveform)  # No labels → no margin
         probs = F.softmax(logits, dim=-1)
         # Use the max probability (most likely class) for scoring
         max_probs, _ = probs.max(dim=-1)
@@ -473,13 +583,14 @@ class SWWaveNetClassifier(nn.Module):
 
 if __name__ == "__main__":
     print("=" * 70)
-    print("  WaveNet Backbone — Standalone Architecture Test")
+    print("  WaveNet Backbone — Standalone Architecture Test (Paper Config)")
     print("=" * 70)
 
     # ---- Test individual backbone ----
     print("\n--- Single WaveNetBackbone (spectrogram-like input) ---")
-    backbone = WaveNetBackbone(in_channels=128, layers=6, blocks=2, repr_dim=128)
+    backbone = WaveNetBackbone(in_channels=128)
     total_params = sum(p.numel() for p in backbone.parameters())
+    print(f"  Config            : layers=4, blocks=3, channels=512")
     print(f"  Receptive field   : {backbone.receptive_field} samples")
     print(f"  Total parameters  : {total_params:,}")
 
@@ -493,7 +604,6 @@ if __name__ == "__main__":
     print("\n--- SWWaveNetEncoder (dual-branch) ---")
     encoder = SWWaveNetEncoder(
         spec_channels=128, wavegram_channels=512,
-        layers=6, blocks=2, repr_dim=128
     )
     total_params_enc = sum(p.numel() for p in encoder.parameters())
     print(f"  Total parameters  : {total_params_enc:,}")
@@ -509,10 +619,25 @@ if __name__ == "__main__":
     print(f"  Spec repr output  : {list(spec_repr.shape)}")
     print(f"  Wave repr output  : {list(wave_repr.shape)}")
 
+    # ---- Test ArcFace head ----
+    print("\n--- ArcFace Head (scale=30, margin=0.7) ---")
+    arcface = ArcFaceHead(in_features=256, num_classes=4, scale=30.0, margin=0.7)
+    dummy_features = torch.randn(2, 256)
+    dummy_labels = torch.tensor([0, 2])
+
+    arcface.train()
+    logits_train = arcface(dummy_features, dummy_labels)
+    print(f"  Train logits shape: {list(logits_train.shape)}")
+
+    arcface.eval()
+    with torch.no_grad():
+        logits_eval = arcface(dummy_features)
+    print(f"  Eval logits shape : {list(logits_eval.shape)}")
+
     print("\n" + "=" * 70)
     print("  Spectrogram WaveNet receptive field :",
           encoder.wavenet_spec.receptive_field, "frames")
     print("  Wavegram   WaveNet receptive field :",
           encoder.wavenet_wave.receptive_field, "frames")
     print("=" * 70)
-    print("\n✓ SW-WaveNet dual-branch encoder verified successfully!")
+    print("\n[OK] SW-WaveNet (paper-matched) verified successfully!")
