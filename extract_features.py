@@ -88,18 +88,15 @@ def save_spectrogram_png(spec_tensor, save_path, title):
 
 
 def save_wavegram_png(wave_tensor, save_path, title):
-    """Save a wavegram visualisation from [1, 4, Time, Freq] (all 4 channels)."""
-    wave_np = wave_tensor.squeeze(0).numpy()         # [4, Time, Freq]
-    n_ch = wave_np.shape[0]
-    fig, axes = plt.subplots(n_ch, 1, figsize=(10, 2 * n_ch), sharex=True)
-    if n_ch == 1:
-        axes = [axes]
-    for ch in range(n_ch):
-        img = axes[ch].imshow(wave_np[ch].T, aspect="auto", origin="lower", cmap="plasma")
-        axes[ch].set_ylabel(f"Ch {ch}")
-        fig.colorbar(img, ax=axes[ch], format="%.2f")
-    axes[0].set_title(title, fontsize=9)
-    axes[-1].set_xlabel("Time Frames")
+    """Save a wavegram visualisation from [1, 128, Time]."""
+    wave_np = wave_tensor.squeeze(0).numpy()         # [128, Time]
+    fig, ax = plt.subplots(figsize=(10, 3))
+    # Plot treating the 128 channels as frequency bins
+    img = ax.imshow(wave_np, aspect="auto", origin="lower", cmap="plasma")
+    ax.set_title(title, fontsize=9)
+    ax.set_xlabel("Time Frames")
+    ax.set_ylabel("Channels")
+    fig.colorbar(img, ax=ax, format="%.2f")
     plt.tight_layout()
     plt.savefig(save_path, dpi=100, bbox_inches="tight")
     plt.close(fig)
@@ -117,8 +114,8 @@ def run_pipeline():
     Output layout:
         output/spectrograms/<basename>.pt   — spectrogram tensor [1, 1, T, 128]
         output/spectrograms/<basename>.png  — spectrogram image
-        output/wavegrams/<basename>.pt      — wavegram tensor    [1, 4, T', 128]
-        output/wavegrams/<basename>.png     — wavegram image (4 channels)
+        output/wavegrams/<basename>.pt      — wavegram tensor    [1, 128, T']
+        output/wavegrams/<basename>.png     — wavegram image
     """
     from wavegram_net import WavegramNet
 
@@ -186,7 +183,7 @@ def run_pipeline():
             # --- Branch 2: Learned wavegram (from WavegramNet) ---
             with torch.no_grad():
                 wavegram = wavegram_net(waveform)
-            # wavegram : [1, 4, Time', 128]
+            # wavegram : [1, 128, Time']
 
             # --- Save tensors ---
             torch.save(spectrogram, os.path.join(SPEC_DIR, f"{basename}.pt"))

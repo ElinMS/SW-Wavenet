@@ -37,7 +37,7 @@ from wavenet_model import SWWaveNetClassifier
 # Configuration
 # ======================================================================
 
-TEST_DIR       = "/home/teaching/Elin/fan/test"
+TEST_DIR       = "/home/teaching/Elin/fan_preprocessed/test"
 CHECKPOINT_DIR = "/home/teaching/Elin/SW-Wavenet/checkpoints"
 OUTPUT_DIR     = "/home/teaching/Elin/SW-Wavenet/evaluation"
 SAMPLE_RATE    = 16000
@@ -56,8 +56,8 @@ def parse_test_file(filepath):
     Parse test filename to extract label and machine ID.
 
     DCASE 2020 naming convention:
-        normal_id_XX_YYYYYYYY.wav   -> is_anomaly = False
-        anomaly_id_XX_YYYYYYYY.wav  -> is_anomaly = True
+        normal_id_XX_YYYYYYYY.pt   -> is_anomaly = False
+        anomaly_id_XX_YYYYYYYY.pt  -> is_anomaly = True
 
     Returns:
         is_anomaly: bool
@@ -75,27 +75,22 @@ def parse_test_file(filepath):
     return is_anomaly, machine_id
 
 
-def extract_features(audio_path):
+def extract_features(pt_path):
     """
-    Extract log-mel spectrogram and raw waveform from an audio file.
+    Extract log-mel spectrogram and raw waveform from preprocessed file.
 
     Returns:
         spectrogram: [1, 1, Time, 128]  -- log-mel spectrogram
         waveform:    [1, 1, Samples]    -- raw audio
     """
-    y, _ = librosa.load(audio_path, sr=SAMPLE_RATE)
-
-    # Branch 1: Log-mel spectrogram
-    mel_spec = librosa.feature.melspectrogram(
-        y=y, sr=SAMPLE_RATE, n_fft=N_FFT,
-        hop_length=HOP_LENGTH, n_mels=N_MELS
-    )
-    log_mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
-    spectrogram = torch.tensor(log_mel_spec, dtype=torch.float32)\
-                       .transpose(0, 1).unsqueeze(0).unsqueeze(0)
-
-    # Branch 2: Raw waveform
-    waveform = torch.tensor(y, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+    data = torch.load(pt_path, map_location='cpu', weights_only=True)
+    
+    # Preprocessed tensor:
+    # spectrogram: [Time, 128] -> [1, 1, Time, 128]
+    # waveform: [1, Samples] -> [1, 1, Samples]
+    
+    spectrogram = data['spectrogram'].unsqueeze(0).unsqueeze(0)
+    waveform = data['waveform'].unsqueeze(0)
 
     return spectrogram, waveform
 
@@ -139,9 +134,9 @@ def main():
 
     # -- 1. Discover test files ------------------------------------------
     print("\n[1/5] Loading test files...")
-    test_files = sorted(glob.glob(os.path.join(TEST_DIR, "*.wav")))
+    test_files = sorted(glob.glob(os.path.join(TEST_DIR, "*.pt")))
     if not test_files:
-        print(f"  [ERROR] No .wav files found in {TEST_DIR}")
+        print(f"  [ERROR] No .pt files found in {TEST_DIR}")
         return
 
     # Count normal vs anomaly

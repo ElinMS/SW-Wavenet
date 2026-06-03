@@ -174,7 +174,8 @@ class WaveNetBackbone(nn.Module):
                  residual_channels=512,
                  skip_channels=512,
                  repr_dim=128,
-                 kernel_size=2,
+                 start_kernel_size=2,
+                 kernel_size=3,
                  bias=True):
         super(WaveNetBackbone, self).__init__()
 
@@ -184,7 +185,8 @@ class WaveNetBackbone(nn.Module):
         self.repr_dim = repr_dim
 
         # --- Start: project input channels to residual width ---
-        self.start_conv = nn.Conv1d(in_channels, residual_channels, 1, bias=bias)
+        # Paper specifies causal convolution K=2
+        self.start_conv = nn.Conv1d(in_channels, residual_channels, kernel_size=start_kernel_size, padding=1, bias=bias)
         self.start_bn = nn.BatchNorm1d(residual_channels)
 
         # --- Core: stacked dilated layers ---
@@ -238,7 +240,12 @@ class WaveNetBackbone(nn.Module):
             repr_vec: [Batch, repr_dim]
         """
         # Project to residual channels
-        x = F.relu(self.start_bn(self.start_conv(x)))
+        original_length = x.size(-1)
+        x = self.start_conv(x)
+        # Strip padding to keep causal property
+        if x.size(-1) != original_length:
+            x = x[..., :-1]
+        x = F.relu(self.start_bn(x))
 
         # Accumulate skip connections across all layers
         skip_sum = 0
@@ -369,14 +376,14 @@ class SWWaveNetEncoder(nn.Module):
 
     def __init__(self,
                  spec_channels=128,
-                 wavegram_channels=512,
+                 wavegram_channels=128,
                  layers=4,
                  blocks=3,
                  dilation_channels=512,
                  residual_channels=512,
                  skip_channels=512,
                  repr_dim=128,
-                 kernel_size=2):
+                 kernel_size=3):
         super(SWWaveNetEncoder, self).__init__()
 
         self.repr_dim = repr_dim
@@ -413,20 +420,13 @@ class SWWaveNetEncoder(nn.Module):
         # Squeeze the single input-channel dim, then swap Time ↔ Freq
         return spec.squeeze(1).transpose(1, 2)
 
-    @staticmethod
-    def _reshape_wavegram(wavegram):
-        """Reshape [Batch, C=4, Time, Freq=128] → [Batch, C×Freq=512, Time]."""
-        B, C, T, F = wavegram.shape
-        # (B, C, T, F) → (B, C, F, T) → (B, C*F, T)
-        return wavegram.permute(0, 1, 3, 2).reshape(B, C * F, T)
-
     # ---- forward ----
 
     def forward(self, spectrogram, wavegram):
         """
         Args:
             spectrogram: [Batch, 1, Time,  Freq=128]
-            wavegram:    [Batch, 4, Time', Freq=128]
+            wavegram:    [Batch, 128, Time']
 
         Returns:
             spec_repr: [Batch, repr_dim]  — representation from spectrogram branch
@@ -434,7 +434,7 @@ class SWWaveNetEncoder(nn.Module):
         """
         # Reshape 2D features → 1D multi-channel sequences
         spec_1d = self._reshape_spectrogram(spectrogram)   # [B, 128, T]
-        wave_1d = self._reshape_wavegram(wavegram)         # [B, 512, T']
+        wave_1d = wavegram                                 # [B, 128, T']
 
         # Pass through respective WaveNet backbones
         spec_repr = self.wavenet_spec(spec_1d)
@@ -487,14 +487,14 @@ class SWWaveNetClassifier(nn.Module):
                  wavegram_net,
                  num_classes,
                  spec_channels=128,
-                 wavegram_channels=512,
+                 wavegram_channels=128,
                  layers=4,
                  blocks=3,
                  dilation_channels=512,
                  residual_channels=512,
                  skip_channels=512,
                  repr_dim=128,
-                 kernel_size=2,
+                 kernel_size=3,
                  arcface_scale=30.0,
                  arcface_margin=0.7):
         super(SWWaveNetClassifier, self).__init__()
@@ -537,7 +537,7 @@ class SWWaveNetClassifier(nn.Module):
             logits: [Batch, num_classes]  — scaled cosine similarities
         """
         # Branch 2: waveform → learned wavegram
-        wavegram = self.wavegram_net(waveform)      # [B, 4, T', 128]
+        wavegram = self.wavegram_net(waveform)      # [B, 128, T']
 
         # Dual-branch encoding → representation vectors
         spec_repr, wave_repr = self.encoder(spectrogram, wavegram)
@@ -603,13 +603,13 @@ if __name__ == "__main__":
     # ---- Test dual-branch encoder ----
     print("\n--- SWWaveNetEncoder (dual-branch) ---")
     encoder = SWWaveNetEncoder(
-        spec_channels=128, wavegram_channels=512,
+        spec_channels=128, wavegram_channels=128,
     )
     total_params_enc = sum(p.numel() for p in encoder.parameters())
     print(f"  Total parameters  : {total_params_enc:,}")
 
     spec = torch.randn(1, 1, 50, 128)   # [B, 1, T, F=128]
-    wave = torch.randn(1, 4, 50, 128)   # [B, 4, T', F=128]
+    wave = torch.randn(1, 128, 50)      # [B, 128, T']
     print(f"  Spectrogram input : {list(spec.shape)}")
     print(f"  Wavegram input    : {list(wave.shape)}")
 

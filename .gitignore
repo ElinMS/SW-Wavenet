@@ -1,6 +1,8 @@
 # Generated output data
 output/
+checkpoints/
 *.pt
+venv/
 
 # Dataset (keep out of repo)
 dev_data*/

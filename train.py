@@ -31,7 +31,7 @@ from wavenet_model import SWWaveNetClassifier
 # Configuration
 # ══════════════════════════════════════════════════════════════════════════
 
-DATASET_DIR   = "/home/teaching/Elin/fan/train"
+DATASET_DIR   = "/home/teaching/Elin/fan_preprocessed/train"
 NUM_FILES     = None         # Use all files (None = all)
 SAMPLE_RATE   = 16000
 N_MELS        = 128
@@ -78,8 +78,8 @@ class DCASEFanDataset(Dataset):
         self.hop_length = hop_length
 
         # Collect and sort audio files
-        all_wavs = sorted(glob.glob(os.path.join(dataset_dir, "*.wav")))
-        self.audio_files = all_wavs[:num_files] if num_files else all_wavs
+        all_pt_files = sorted(glob.glob(os.path.join(dataset_dir, "*.pt")))
+        self.audio_files = all_pt_files[:num_files] if num_files else all_pt_files
 
         # Discover machine IDs and create label mapping
         all_ids = sorted(set(self._parse_machine_id(f) for f in self.audio_files))
@@ -92,7 +92,7 @@ class DCASEFanDataset(Dataset):
 
     @staticmethod
     def _parse_machine_id(filepath):
-        """Extract machine ID from filename like 'normal_id_00_00000000.wav'."""
+        """Extract machine ID from filename like 'normal_id_00_00000000.pt'."""
         basename = os.path.basename(filepath)
         match = re.search(r'_id_(\d+)_', basename)
         if match:
@@ -103,26 +103,15 @@ class DCASEFanDataset(Dataset):
         return len(self.audio_files)
 
     def __getitem__(self, idx):
-        audio_path = self.audio_files[idx]
+        pt_path = self.audio_files[idx]
 
-        # Load audio
-        y, _ = librosa.load(audio_path, sr=self.sample_rate)
-
-        # Branch 1: Log-mel spectrogram
-        mel_spec = librosa.feature.melspectrogram(
-            y=y, sr=self.sample_rate, n_fft=self.n_fft,
-            hop_length=self.hop_length, n_mels=self.n_mels
-        )
-        log_mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
-        # [n_mels, time] → [1, time, n_mels]  (channel, time, freq)
-        spectrogram = torch.tensor(log_mel_spec, dtype=torch.float32)\
-                           .transpose(0, 1).unsqueeze(0)
-
-        # Branch 2: Raw waveform
-        waveform = torch.tensor(y, dtype=torch.float32).unsqueeze(0)  # [1, samples]
+        # Load precomputed tensors
+        data = torch.load(pt_path, map_location='cpu', weights_only=True)
+        spectrogram = data['spectrogram'].unsqueeze(0)
+        waveform = data['waveform']
 
         # Label: machine ID → class index
-        machine_id = self._parse_machine_id(audio_path)
+        machine_id = self._parse_machine_id(pt_path)
         label = self.id_to_label[machine_id]
 
         return spectrogram, waveform, label
@@ -271,14 +260,14 @@ def main():
         wavegram_net=wavegram_net,
         num_classes=dataset.num_classes,
         spec_channels=N_MELS,
-        wavegram_channels=512,
+        wavegram_channels=128,
         layers=4,
         blocks=3,
         dilation_channels=512,
         residual_channels=512,
         skip_channels=512,
         repr_dim=128,
-        kernel_size=2,
+        kernel_size=3,
         arcface_scale=30.0,
         arcface_margin=0.7,
     )

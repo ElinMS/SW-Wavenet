@@ -1,0 +1,20 @@
+SW-WaveNet Evaluation Results
+==================================================
+
+Checkpoint: /home/teaching/Elin/SW-Wavenet/checkpoints/best_model.pt
+Test dir  : /home/teaching/Elin/fan/test
+Device    : cuda
+
+Machine ID            AUC       pAUC
+----------------------------------------
+Fan ID 00         0.9459     0.8973
+Fan ID 02         0.6630     0.3596
+Fan ID 04         0.6193     0.2766
+Fan ID 06         0.7784     0.5789
+----------------------------------------
+Average            0.7516     0.5281
+Overall            0.7590     0.5421
+
+
+
+Training terminated at epoch 20 out of 50

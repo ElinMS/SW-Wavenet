@@ -1,0 +1,16 @@
+SW-WaveNet Evaluation Results
+==================================================
+
+Checkpoint: /home/teaching/Elin/SW-Wavenet/checkpoints/best_model.pt
+Test dir  : /home/teaching/Elin/fan/test
+Device    : cpu
+
+Machine ID            AUC       pAUC
+----------------------------------------
+Fan ID 00         0.6450     0.3254
+Fan ID 02         0.5920     0.2134
+Fan ID 04         0.6340     0.3023
+Fan ID 06         0.5139     0.0763
+----------------------------------------
+Average            0.5962     0.2294
+Overall            0.5972     0.2308
