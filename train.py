@@ -224,6 +224,13 @@ def validate(model, dataloader, criterion, device):
 
 
 def main():
+    # Set random seeds for reproducibility
+    torch.manual_seed(42)
+    np.random.seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(42)
+        torch.backends.cudnn.deterministic = True
+
     print("=" * 70)
     print("  SW-WaveNet — End-to-End Training")
     print("=" * 70)
