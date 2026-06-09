@@ -37,9 +37,9 @@ from wavenet_model import SWWaveNetClassifier
 # Configuration
 # ======================================================================
 
-TEST_DIR       = "/home/teaching/Elin/fan_preprocessed/test"
-CHECKPOINT_DIR = "/home/teaching/Elin/SW-Wavenet/checkpoints"
-OUTPUT_DIR     = "/home/teaching/Elin/SW-Wavenet/evaluation"
+TEST_DIR       = "dev_data_fan/fan_preprocessed/test"
+CHECKPOINT_DIR = "checkpoints"
+OUTPUT_DIR     = "evaluation"
 SAMPLE_RATE    = 16000
 N_MELS         = 128
 N_FFT          = 1024

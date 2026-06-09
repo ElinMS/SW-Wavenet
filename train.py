@@ -31,7 +31,7 @@ from wavenet_model import SWWaveNetClassifier
 # Configuration
 # ══════════════════════════════════════════════════════════════════════════
 
-DATASET_DIR   = "/home/teaching/Elin/fan_preprocessed/train"
+DATASET_DIR   = "dev_data_fan/fan_preprocessed/train"
 NUM_FILES     = None         # Use all files (None = all)
 SAMPLE_RATE   = 16000
 N_MELS        = 128
@@ -44,9 +44,10 @@ LEARNING_RATE = 1e-4
 NUM_EPOCHS    = 50
 VAL_SPLIT     = 0.2          # 20% for validation
 DEVICE        = "cuda" if torch.cuda.is_available() else "cpu"
+RESUME        = True         # Resume training from checkpoint if it exists
 
 # Output
-CHECKPOINT_DIR = "/home/teaching/Elin/SW-Wavenet/checkpoints"
+CHECKPOINT_DIR = "checkpoints"
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -295,8 +296,24 @@ def main():
 
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     best_val_loss = float('inf')
+    start_epoch = 1
 
-    for epoch in range(1, NUM_EPOCHS + 1):
+    # Check if we should resume from checkpoint
+    resume_path = os.path.join(CHECKPOINT_DIR, "best_model.pt")
+    if RESUME and os.path.exists(resume_path):
+        print(f"  Resuming training from checkpoint: {resume_path}")
+        checkpoint = torch.load(resume_path, map_location=DEVICE, weights_only=False)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        best_val_loss = checkpoint.get('val_loss', float('inf'))
+        print(f"  ✓ Resumed from Epoch {checkpoint['epoch']} (val_loss={best_val_loss:.4f})")
+        
+        # Catch up scheduler to the correct learning rate
+        for _ in range(checkpoint['epoch']):
+            scheduler.step()
+
+    for epoch in range(start_epoch, NUM_EPOCHS + 1):
         t0 = time.time()
 
         # Train

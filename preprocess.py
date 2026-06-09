@@ -39,8 +39,8 @@ def main():
     n_mels = 128
     
     dirs_to_process = [
-        ("/home/teaching/Elin/fan/train", "/home/teaching/Elin/fan_preprocessed/train"),
-        ("/home/teaching/Elin/fan/test", "/home/teaching/Elin/fan_preprocessed/test")
+        ("dev_data_fan/fan/train", "dev_data_fan/fan_preprocessed/train"),
+        ("dev_data_fan/fan/test", "dev_data_fan/fan_preprocessed/test")
     ]
     
     tasks = []
