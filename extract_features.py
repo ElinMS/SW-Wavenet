@@ -146,7 +146,7 @@ def run_pipeline():
     wavegram_net = WavegramNet()
 
     # Load trained weights if checkpoint exists
-    ckpt_path = os.path.join("checkpoints", "best_model.pt")
+    ckpt_path = os.path.join("backup_v2/checkpoints", "best_model.pt")
     if os.path.exists(ckpt_path):
         print(f"  Loading trained weights from: {ckpt_path}")
         checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)

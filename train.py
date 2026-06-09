@@ -44,10 +44,10 @@ LEARNING_RATE = 1e-4
 NUM_EPOCHS    = 50
 VAL_SPLIT     = 0.2          # 20% for validation
 DEVICE        = "cuda" if torch.cuda.is_available() else "cpu"
-RESUME        = True         # Resume training from checkpoint if it exists
+RESUME        = False        # Set to False to train from scratch from epoch 1
 
 # Output
-CHECKPOINT_DIR = "checkpoints"
+CHECKPOINT_DIR = "backup_v2/checkpoints"
 
 
 # ══════════════════════════════════════════════════════════════════════════
