@@ -37,7 +37,14 @@ from wavenet_model import SWWaveNetClassifier
 # Configuration
 # ======================================================================
 
-TEST_DIR       = "dev_data_fan/fan_preprocessed/test"
+# Automatically resolve test dataset path for local Windows vs. remote Linux server
+if os.path.exists("dev_data_fan/fan_preprocessed/test"):
+    TEST_DIR = "dev_data_fan/fan_preprocessed/test"
+elif os.path.exists("../fan_preprocessed/test"):
+    TEST_DIR = "../fan_preprocessed/test"
+else:
+    TEST_DIR = "/home/teaching/Elin/fan_preprocessed/test"
+
 CHECKPOINT_DIR = "backup_v2/checkpoints"
 OUTPUT_DIR     = "backup_v2/evaluation"
 SAMPLE_RATE    = 16000

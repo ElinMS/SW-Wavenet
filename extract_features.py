@@ -15,7 +15,13 @@ from sklearn.datasets import fetch_california_housing
 
 # ── Configuration ─────────────────────────────────────────────────────────
 
-DATASET_DIR   = "dev_data_fan/fan/train"
+if os.path.exists("dev_data_fan/fan/train"):
+    DATASET_DIR = "dev_data_fan/fan/train"
+elif os.path.exists("../fan/train"):
+    DATASET_DIR = "../fan/train"
+else:
+    DATASET_DIR = "/home/teaching/Elin/fan/train"
+
 OUTPUT_DIR    = "output"
 SPEC_DIR      = os.path.join(OUTPUT_DIR, "spectrograms")
 WAVE_DIR      = os.path.join(OUTPUT_DIR, "wavegrams")

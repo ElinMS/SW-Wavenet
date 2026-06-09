@@ -31,7 +31,14 @@ from wavenet_model import SWWaveNetClassifier
 # Configuration
 # ══════════════════════════════════════════════════════════════════════════
 
-DATASET_DIR   = "dev_data_fan/fan_preprocessed/train"
+# Automatically resolve dataset path for local Windows vs. remote Linux server
+if os.path.exists("dev_data_fan/fan_preprocessed/train"):
+    DATASET_DIR = "dev_data_fan/fan_preprocessed/train"
+elif os.path.exists("../fan_preprocessed/train"):
+    DATASET_DIR = "../fan_preprocessed/train"
+else:
+    DATASET_DIR = "/home/teaching/Elin/fan_preprocessed/train"
+
 NUM_FILES     = None         # Use all files (None = all)
 SAMPLE_RATE   = 16000
 N_MELS        = 128

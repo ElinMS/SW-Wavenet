@@ -38,10 +38,22 @@ def main():
     hop_length = 512
     n_mels = 128
     
-    dirs_to_process = [
-        ("dev_data_fan/fan/train", "dev_data_fan/fan_preprocessed/train"),
-        ("dev_data_fan/fan/test", "dev_data_fan/fan_preprocessed/test")
-    ]
+    # Automatically resolve dataset paths for local Windows vs. remote Linux server
+    if os.path.exists("dev_data_fan/fan"):
+        dirs_to_process = [
+            ("dev_data_fan/fan/train", "dev_data_fan/fan_preprocessed/train"),
+            ("dev_data_fan/fan/test", "dev_data_fan/fan_preprocessed/test")
+        ]
+    elif os.path.exists("../fan"):
+        dirs_to_process = [
+            ("../fan/train", "../fan_preprocessed/train"),
+            ("../fan/test", "../fan_preprocessed/test")
+        ]
+    else:
+        dirs_to_process = [
+            ("/home/teaching/Elin/fan/train", "/home/teaching/Elin/fan_preprocessed/train"),
+            ("/home/teaching/Elin/fan/test", "/home/teaching/Elin/fan_preprocessed/test")
+        ]
     
     tasks = []
     for in_dir, out_dir in dirs_to_process:
